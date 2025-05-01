@@ -1,7 +1,6 @@
 "use client";
 
 import type React from "react";
-
 import { use, useState, useTransition, useEffect } from "react";
 import { searchRuc, addRuc, resetPassword } from "@/app/actions";
 import { Button } from "@/components/ui/button";
@@ -16,6 +15,12 @@ import {
 } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { CheckCircle, Search, AlertCircle } from "lucide-react";
+import {
+  rucSchema,
+  companyNameSchema,
+  addRucSchema,
+} from "@/app/libs/validations";
+import { z } from "zod";
 
 export function RucFinder() {
   const [ruc, setRuc] = useState("");
@@ -32,14 +37,11 @@ export function RucFinder() {
     type: "success" | "error";
     text: string;
   } | null>(null);
+  const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout | null>(null);
 
-  // Get search result using the use hook when searchPromise is available
   const searchResult = searchPromise ? use(searchPromise) : null;
-
-  // Get add result using the use hook when addPromise is available
   const addResult = addPromise ? use(addPromise) : null;
 
-  // Update search result when add is successful
   useEffect(() => {
     if (addResult?.success) {
       setSearchPromise(Promise.resolve({ exists: true, name: companyName }));
@@ -47,21 +49,78 @@ export function RucFinder() {
     }
   }, [addResult, companyName]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ruc || ruc.length < 8) {
-      setMessage({ type: "error", text: "Por favor ingrese un RUC válido" });
+  const validateRuc = (value: string) => {
+    try {
+      rucSchema.parse(value);
+      setMessage(null);
+      return true;
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        setMessage({
+          type: "error",
+          text: error.errors[0].message,
+        });
+      }
+      return false;
+    }
+  };
+
+  const handleRucChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.trim();
+    setRuc(value);
+
+    // Limpiar timeout anterior si existe
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+
+    // Validación inmediata si se llega a 11 dígitos
+    if (value.length === 11) {
+      validateRuc(value);
       return;
     }
 
-    setMessage(null);
+    // Validación después de pausa para otros casos
+    if (value.length > 0) {
+      const newTimeoutId = setTimeout(() => {
+        validateRuc(value);
+      }, 500);
+      setTimeoutId(newTimeoutId);
+    } else {
+      setMessage(null);
+    }
+  };
 
-    // Use startTransition to avoid blocking the UI during the search
+  const handleCompanyNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setCompanyName(value);
+
+    if (value.length > 0) {
+      try {
+        companyNameSchema.parse(value);
+        setMessage(null);
+      } catch (error) {
+        if (error instanceof z.ZodError) {
+          setMessage({
+            type: "error",
+            text: error.errors[0].message,
+          });
+        }
+      }
+    } else {
+      setMessage(null);
+    }
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!validateRuc(ruc)) return;
+
+    setMessage(null);
     startTransition(() => {
       const promise = searchRuc(ruc);
       setSearchPromise(promise);
 
-      // Handle "not found" message after the promise resolves
       promise
         .then((result) => {
           if (!result.exists) {
@@ -71,10 +130,11 @@ export function RucFinder() {
             });
           }
         })
-        .catch(() => {
+        .catch((error) => {
           setMessage({
             type: "error",
-            text: "Error al buscar el RUC. Intente nuevamente.",
+            text:
+              error.message || "Error al buscar el RUC. Intente nuevamente.",
           });
         });
     });
@@ -82,41 +142,35 @@ export function RucFinder() {
 
   const handleAddRuc = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ruc || !companyName) {
-      setMessage({
-        type: "error",
-        text: "Por favor complete todos los campos",
-      });
-      return;
-    }
 
-    setMessage(null);
+    try {
+      const validatedData = addRucSchema.parse({ ruc, companyName });
+      setMessage(null);
 
-    // Use startTransition to avoid blocking the UI during the add operation
-    startTransition(() => {
-      const promise = addRuc(ruc, companyName);
-      setAddPromise(promise);
+      startTransition(() => {
+        const promise = addRuc(validatedData.ruc, validatedData.companyName);
+        setAddPromise(promise);
 
-      promise.catch(() => {
-        setMessage({
-          type: "error",
-          text: "Error al agregar el RUC. Intente nuevamente.",
+        promise.catch((error) => {
+          setMessage({
+            type: "error",
+            text:
+              error.message || "Error al agregar el RUC. Intente nuevamente.",
+          });
         });
       });
-    });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        setMessage({
+          type: "error",
+          text: error.errors[0].message,
+        });
+      }
+    }
   };
 
-  const resetForm = () => {
-    setRuc("");
-    setCompanyName("");
-    setSearchPromise(null);
-    setAddPromise(null);
-    setMessage(null);
-  };
-
-  // Agregar esta función dentro del componente RucFinder antes del return
   const handleResetPassword = () => {
-    if (!ruc) return;
+    if (!validateRuc(ruc)) return;
 
     startTransition(() => {
       resetPassword(ruc)
@@ -126,14 +180,34 @@ export function RucFinder() {
             text: "Contraseña reiniciada exitosamente",
           });
         })
-        .catch(() => {
+        .catch((error) => {
           setMessage({
             type: "error",
-            text: "Error al reiniciar la contraseña",
+            text: error.message || "Error al reiniciar la contraseña",
           });
         });
     });
   };
+
+  const resetForm = () => {
+    setRuc("");
+    setCompanyName("");
+    setSearchPromise(null);
+    setAddPromise(null);
+    setMessage(null);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      setTimeoutId(null);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [timeoutId]);
 
   return (
     <Card className="w-full">
@@ -164,9 +238,14 @@ export function RucFinder() {
                 id="ruc"
                 placeholder="Ingrese el RUC"
                 value={ruc}
-                onChange={(e) => setRuc(e.target.value)}
+                onChange={handleRucChange}
+                maxLength={11}
+                className={message?.type === "error" ? "border-red-500" : ""}
               />
-              <Button type="submit" disabled={isPending}>
+              <Button
+                type="submit"
+                disabled={isPending || !ruc || message?.type === "error"}
+              >
                 {isPending && !searchResult ? (
                   "Buscando..."
                 ) : (
@@ -207,11 +286,18 @@ export function RucFinder() {
                 id="companyName"
                 placeholder="Ingrese el nombre de la empresa"
                 value={companyName}
-                onChange={(e) => setCompanyName(e.target.value)}
+                onChange={handleCompanyNameChange}
+                className={message?.type === "error" ? "border-red-500" : ""}
               />
             </div>
             <div className="flex space-x-2">
-              <Button type="submit" className="flex-1" disabled={isPending}>
+              <Button
+                type="submit"
+                className="flex-1"
+                disabled={
+                  isPending || !companyName || message?.type === "error"
+                }
+              >
                 {isPending && !addResult ? "Agregando..." : "Agregar RUC"}
               </Button>
               <Button variant="outline" onClick={resetForm} className="flex-1">

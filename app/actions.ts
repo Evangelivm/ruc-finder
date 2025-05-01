@@ -1,7 +1,12 @@
-// actions.ts
 "use server";
 
 import { conn } from "./libs/mysql";
+import {
+  rucSchema,
+  addRucSchema,
+  resetPasswordSchema,
+} from "./libs/validations";
+import { z } from "zod";
 
 /**
  * Busca un RUC en la base de datos
@@ -9,10 +14,12 @@ import { conn } from "./libs/mysql";
  */
 export async function searchRuc(ruc: string) {
   try {
-    // Usamos la conexión importada (conn) en lugar de crear un nuevo pool
+    // Validar RUC
+    const validatedRuc = rucSchema.parse(ruc);
+
     const [rows] = await conn.execute(
       "SELECT id, login, name FROM `sec_genusers` WHERE login = ?",
-      [ruc]
+      [validatedRuc]
     );
 
     // Convertir el resultado a un array
@@ -29,6 +36,9 @@ export async function searchRuc(ruc: string) {
     // Si no hay resultados, indicamos que no existe
     return { exists: false };
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error("RUC inválido: " + error.errors[0].message);
+    }
     console.error("Error al buscar el RUC:", error);
     throw new Error("Error al buscar el RUC en la base de datos");
   }
@@ -41,16 +51,38 @@ export async function searchRuc(ruc: string) {
  */
 export async function addRuc(ruc: string, companyName: string) {
   try {
-    // Usamos la conexión importada
+    // Validar datos
+    const validated = addRucSchema.parse({ ruc, companyName });
+
+    // Verificar si el RUC ya existe
+    const [existing] = await conn.execute(
+      "SELECT id FROM `sec_genusers` WHERE login = ?",
+      [validated.ruc]
+    );
+
+    if ((existing as any[]).length > 0) {
+      throw new Error("El RUC ya existe en la base de datos");
+    }
+
     await conn.execute(
       "INSERT INTO `sec_genusers` (login, name, pswd, active) VALUES (?, ?, ?, ?)",
-      [ruc, companyName, "befaab6f41b37290d260c6587052edb3", "Y"]
+      [
+        validated.ruc,
+        validated.companyName,
+        "befaab6f41b37290d260c6587052edb3",
+        "Y",
+      ]
     );
 
     return { success: true };
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error("Datos inválidos: " + error.errors[0].message);
+    }
     console.error("Error al agregar el RUC:", error);
-    throw new Error("Error al agregar el RUC a la base de datos");
+    throw error instanceof Error
+      ? error
+      : new Error("Error al agregar el RUC a la base de datos");
   }
 }
 
@@ -76,16 +108,33 @@ export async function getAllRucs() {
  */
 export async function resetPassword(ruc: string) {
   try {
-    const defaultHashedPassword = "befaab6f41b37290d260c6587052edb3";
+    // Validar RUC
+    const validated = resetPasswordSchema.parse({ ruc });
 
+    // Verificar si el RUC existe
+    const [existing] = await conn.execute(
+      "SELECT id FROM `sec_genusers` WHERE login = ?",
+      [validated.ruc]
+    );
+
+    if ((existing as any[]).length === 0) {
+      throw new Error("El RUC no existe en la base de datos");
+    }
+
+    const defaultHashedPassword = "befaab6f41b37290d260c6587052edb3";
     await conn.execute("UPDATE `sec_genusers` SET pswd = ? WHERE login = ?", [
       defaultHashedPassword,
-      ruc,
+      validated.ruc,
     ]);
 
     return { success: true };
   } catch (error) {
+    if (error instanceof z.ZodError) {
+      throw new Error("RUC inválido: " + error.errors[0].message);
+    }
     console.error("Error al reiniciar la contraseña:", error);
-    throw new Error("Error al reiniciar la contraseña");
+    throw error instanceof Error
+      ? error
+      : new Error("Error al reiniciar la contraseña");
   }
 }
